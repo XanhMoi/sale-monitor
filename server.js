@@ -54,26 +54,36 @@ function extractMsg(payload) {
   // Format A: data.last_message (phổ biến nhất)
   const lm = payload?.data?.last_message;
   if (lm) return {
-    text:      lm.message || lm.text || '',
-    isStaff:   lm.from?.is_page === true || lm.sender?.is_page === true,
-    staffName: lm.from?.name || lm.sender?.name || '(không rõ)',
-    convId:    payload?.data?.id || '?',
-    pageId:    payload?.page_id || '?',
-    tsRaw:     lm.created_time || payload?.timestamp || null,
+    text:         lm.message || lm.text || '',
+    isStaff:      lm.from?.is_page === true || lm.sender?.is_page === true,
+    staffName:    lm.from?.name || lm.sender?.name || '(không rõ)',
+    customerName: payload?.data?.from?.name || payload?.data?.customer?.name || '(khách)',
+    customerId:   payload?.data?.from?.id   || payload?.data?.customer?.id   || '',
+    convId:       payload?.data?.id || payload?.data?.conversation_id || '?',
+    pageId:       payload?.page_id || '?',
+    tsRaw:        lm.created_time || payload?.timestamp || null,
   };
 
   // Format B: message trực tiếp
   const msg = payload?.message;
   if (msg) return {
-    text:      msg.text || msg.message || '',
-    isStaff:   msg.sender?.is_page === true || msg.from?.is_page === true,
-    staffName: msg.sender?.name || msg.from?.name || '(không rõ)',
-    convId:    payload?.conversation_id || '?',
-    pageId:    payload?.page_id || '?',
-    tsRaw:     msg.created_time || null,
+    text:         msg.text || msg.message || '',
+    isStaff:      msg.sender?.is_page === true || msg.from?.is_page === true,
+    staffName:    msg.sender?.name || msg.from?.name || '(không rõ)',
+    customerName: payload?.customer?.name || payload?.from?.name || '(khách)',
+    customerId:   payload?.customer?.id   || payload?.from?.id   || '',
+    convId:       payload?.conversation_id || '?',
+    pageId:       payload?.page_id || '?',
+    tsRaw:        msg.created_time || null,
   };
 
   return null;
+}
+
+// Link thẳng vào hội thoại Pancake
+function pancakeLink(pageId, convId) {
+  if (!pageId || pageId === '?' || !convId || convId === '?') return null;
+  return `https://pancake.vn/conversations?page_id=${pageId}&id=${convId}`;
 }
 
 function vnTime() {
@@ -108,26 +118,31 @@ app.post('/webhook', express.text({ type: 'text/*', limit: '2mb' }), (req, res) 
 
     const issues = checkQuality(e.text);
     const ts = vnTime();
+    const link = pancakeLink(e.pageId, e.convId);
 
     const entry = {
-      _ts:     Date.now(),
-      time:    ts,
-      staff:   e.staffName,
-      message: e.text.slice(0, 300),
+      _ts:          Date.now(),
+      time:         ts,
+      staff:        e.staffName,
+      customer:     e.customerName,
+      customerId:   e.customerId,
+      message:      e.text.slice(0, 300),
       issues,
-      ok:      issues.length === 0,
-      pageId:  e.pageId,
-      convId:  e.convId,
+      ok:           issues.length === 0,
+      pageId:       e.pageId,
+      convId:       e.convId,
+      pancakeLink:  link,
     };
 
     alertLog.unshift(entry);
     if (alertLog.length > MAX_LOG) alertLog.pop();
 
     if (issues.length > 0) {
-      console.log(`[⚠️  ${ts}] ${e.staffName} | ${issues.join(' · ')}`);
+      console.log(`[⚠️  ${ts}] ${e.staffName} → ${e.customerName} | ${issues.join(' · ')}`);
       console.log(`     "${e.text.slice(0, 100)}"`);
+      if (link) console.log(`     🔗 ${link}`);
     } else {
-      console.log(`[✅  ${ts}] ${e.staffName}: "${e.text.slice(0, 80)}"`);
+      console.log(`[✅  ${ts}] ${e.staffName} → ${e.customerName}: "${e.text.slice(0, 80)}"`);
     }
   }
 });
@@ -155,17 +170,39 @@ app.get('/api/alerts/clear', (_req, res) => {
 // Trang chủ
 app.get('/', (_req, res) => {
   const bad = alertLog.filter(e => !e.ok);
-  res.send(`
+  res.send(`<!DOCTYPE html><html><head><meta charset="UTF-8">
+    <title>Sale Monitor</title>
+    <style>
+      body{font-family:sans-serif;background:#0f172a;color:#e2e8f0;padding:20px;max-width:800px;margin:0 auto}
+      h2{color:#10b981}
+      .stat{background:#1e293b;padding:10px 16px;border-radius:8px;margin-bottom:12px;display:inline-block;margin-right:8px}
+      .alert{background:#1a0a0a;border-left:3px solid #ef4444;border-radius:6px;padding:12px;margin:8px 0}
+      .alert .header{font-weight:bold;margin-bottom:6px;color:#fca5a5}
+      .alert .issues{color:#fbbf24;font-size:13px;margin-bottom:6px}
+      .alert .msg{color:#94a3b8;font-style:italic;font-size:13px;border-left:2px solid #334155;padding-left:8px}
+      .alert .link{margin-top:6px;font-size:12px}
+      .alert .link a{color:#60a5fa}
+      .ok{color:#10b981;font-size:13px}
+      code{background:#1e293b;padding:2px 6px;border-radius:4px;color:#7dd3fc}
+    </style></head><body>
     <h2>🔍 Sale Monitor</h2>
-    <p>Webhook: <code>POST /webhook</code></p>
-    <p>Đã nhận: <b>${alertLog.length}</b> tin nhắn nhân viên | ⚠️ Cảnh báo: <b>${bad.length}</b></p>
-    <p>API: <a href="/api/alerts">/api/alerts</a></p>
-    ${bad.slice(0,5).map(a=>`<div style="background:#1a0a0a;padding:8px;margin:4px;border-left:3px solid #f55">
-      <b>${a.time} — ${a.staff}</b><br>
-      ${a.issues.join('<br>')}:<br>
-      <i>"${a.message.slice(0,120)}"</i>
-    </div>`).join('')}
-  `);
+    <div class="stat">📨 Đã nhận: <b>${alertLog.length}</b> tin nhắn NV</div>
+    <div class="stat">⚠️ Vi phạm SOP: <b style="color:#ef4444">${bad.length}</b></div>
+    <p style="color:#64748b;font-size:13px">Webhook: <code>POST /webhook</code> &nbsp;|&nbsp; <a href="/api/alerts" style="color:#60a5fa">/api/alerts</a></p>
+    <hr style="border-color:#1e293b;margin:16px 0">
+    <h3 style="color:#fbbf24">⚠️ Vi phạm gần nhất</h3>
+    ${bad.length === 0 ? '<p class="ok">✅ Chưa có vi phạm nào</p>' :
+      bad.slice(0,10).map(a=>`
+      <div class="alert">
+        <div class="header">
+          🕐 ${a.time} &nbsp;|&nbsp; 👤 Sale: <b>${a.staff}</b> &nbsp;→&nbsp; 👥 Khách: <b>${a.customer || '?'}</b>
+        </div>
+        <div class="issues">⚠️ ${a.issues.join('<br>⚠️ ')}</div>
+        <div class="msg">"${a.message.slice(0,150)}"</div>
+        ${a.pancakeLink ? `<div class="link">🔗 <a href="${a.pancakeLink}" target="_blank">Mở hội thoại trong Pancake →</a></div>` : ''}
+      </div>`).join('')
+    }
+  </body></html>`);
 });
 
 app.listen(PORT, '0.0.0.0', () => {
